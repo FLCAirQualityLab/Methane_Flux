@@ -5,6 +5,10 @@
 #include "Adafruit_ADS1X15.h"
 #include "Adafruit_BME680.h"
 
+/* If ADAfruit libaries gives "#include errors detected based on information provided by the configurationProvider setting. 
+Squiggles are disabled for this translation unit <path to libary> cannot open source file "Adafruit_ADS1X15.h"C/C++(1696)"
+Ignore and compile code. This error is a a know bug by intellisense and should not affect the program.
+*/
 TCPClient client;
 SYSTEM_MODE(AUTOMATIC);
 SerialLogHandler logHandler(LOG_LEVEL_INFO);
@@ -396,6 +400,16 @@ void loop() {
 
     // Timestamp and format data
     int timestamp = (int)Time.now();
+    // Format cloud string
+    String data = String::format(
+        "%i,%i,%i,%i,%i,%i,%i,%i,%i,%i,%i,%i,%i,%i,%i,%i,%i,%i,%i,%i,%i,%i,%i",
+        timestamp, i_flowSlm, i_tempFlowC, i_av_MOX_0, i_av_MOX_1, i_av_MOX_2, i_av_EC_0, i_av_EC_1, 
+        i_av_MOX_BO_0, i_av_MOX_BO_1, i_av_MOX_BO_2, i_av_EC_BO_0, i_av_EC_BO_1, 
+        i_av_EC_BO_2, i_SGX_ppm, 
+        i_temperatureInC, i_pressurepa, i_relativeHumidity, i_gas_resistance,
+        i_temperatureInC_bo, i_pressurepa_bo, i_relativeHumidity_bo, i_gas_resistance_bo
+    ); 
+
     if(format_uart){
         String timeStr = Time.format(timestamp, TIME_FORMAT_DEFAULT);
         String formattedData = String::format(
@@ -429,21 +443,10 @@ void loop() {
             temperatureInC, pressurepa, relativeHumidity, gas_resistance, 
             temperatureInC_bo, pressurepa_bo, relativeHumidity_bo, gas_resistance_bo
         );
+        Serial.println(formattedData + "," + String(sample_cnt) + "\n");
     }
-
-    // Format cloud string
-    String data = String::format(
-        "%i,%i,%i,%i,%i,%i,%i,%i,%i,%i,%i,%i,%i,%i,%i,%i,%i,%i,%i,%i,%i,%i,%i",
-        timestamp, i_flowSlm, i_tempFlowC, i_av_MOX_0, i_av_MOX_1, i_av_MOX_2, i_av_EC_0, i_av_EC_1, 
-        i_av_MOX_BO_0, i_av_MOX_BO_1, i_av_MOX_BO_2, i_av_EC_BO_0, i_av_EC_BO_1, 
-        i_av_EC_BO_2, i_SGX_ppm, 
-        i_temperatureInC, i_pressurepa, i_relativeHumidity, i_gas_resistance,
-        i_temperatureInC_bo, i_pressurepa_bo, i_relativeHumidity_bo, i_gas_resistance_bo
-    );
-
     // Print formatted sensor data and sample count
-    if(format_uart) {Serial.println(formattedData + "," + String(sample_cnt) + "\n");}
-    Serial.println(data + "," + String(sample_cnt) + "\n");
+      Serial.println(data + "," + String(sample_cnt) + "\n");
 
     // Buffer data for cloud publishing if needed
     if ((dataBuffer.length() + data.length() + 1) > 1024) {
