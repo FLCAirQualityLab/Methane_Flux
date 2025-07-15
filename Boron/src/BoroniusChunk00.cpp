@@ -2,16 +2,25 @@
 #include <string>
 #include <Wire.h>
 #include <sstream>
-#include "Adafruit_ADS1X15.h"
-#include "Adafruit_BME680.h"
+#include "../lib/SdFat/src/SdFat.h"
+#include "../lib/Adafruit_ADS1X15/src/Adafruit_ADS1X15.h"
+#include "../lib/Adafruit_BME680/src/Adafruit_BME680.h"
 
 /* If ADAfruit libaries gives "#include errors detected based on information provided by the configurationProvider setting. 
 Squiggles are disabled for this translation unit <path to libary> cannot open source file "Adafruit_ADS1X15.h"C/C++(1696)"
 Ignore and compile code. This error is a a know bug by intellisense and should not affect the program.
 */
+
+// Fixing SD FAt object
+SdFat SD;
+
 TCPClient client;
 SYSTEM_MODE(AUTOMATIC);
 SerialLogHandler logHandler(LOG_LEVEL_INFO);
+
+// Event/File Name
+String eventName = "Boron_1";
+String fileName = "Data.csv"; // Name of File to store data on SD card
 
 // Flowrate address and commands
 #define SFM4300_ADDR                         0x2A
@@ -37,7 +46,8 @@ Adafruit_ADS1115 ads_MOX_BO(0x4a);
 Adafruit_ADS1115 ads_EC_BO(0x4b);
 Adafruit_BME680 bme680_bo;
 
-int sampletime = 10000;
+ // Time In Milliseconds between each sample
+int sampletime = 27000;
 int sample_cnt = 0;
 bool active = true;
 bool format_uart = false;
@@ -207,20 +217,61 @@ String extractSgxReading() {
     }
     return "";
 }
+// Function to help simplifly Setup Loop
+void initializeSensors() {
+    // Initialize BME680 (main)
+    if (!bme680.begin(0x77)) {
+        Serial.println(F("Could not find a valid BME680 sensor, check wiring!"));
+        delay(2000);
+    }
+    bme680.setTemperatureOversampling(BME680_OS_8X);
+    bme680.setHumidityOversampling(BME680_OS_2X);
+    bme680.setPressureOversampling(BME680_OS_4X);
+    bme680.setIIRFilterSize(BME680_FILTER_SIZE_3);
+    bme680.setGasHeater(320, 150);
 
+    // Initialize BME680 (BO)
+    if (!bme680_bo.begin(0x76)) {
+        Serial.println(F("Could not find a valid BO BME680 sensor, check wiring!"));
+        delay(2000);
+    }
+    bme680_bo.setTemperatureOversampling(BME680_OS_8X);
+    bme680_bo.setHumidityOversampling(BME680_OS_2X);
+    bme680_bo.setPressureOversampling(BME680_OS_4X);
+    bme680_bo.setIIRFilterSize(BME680_FILTER_SIZE_3);
+    bme680_bo.setGasHeater(320, 150);
 
+    // Initialize ADCs
+    ads_MOX.begin();
+    ads_MOX.setGain(GAIN_ONE);
+    ads_EC.begin();
+    ads_EC.setGain(GAIN_ONE);
+
+    ads_MOX_BO.begin();
+    ads_MOX_BO.setGain(GAIN_ONE);
+    ads_EC_BO.begin();
+    ads_EC_BO.setGain(GAIN_ONE);
+
+    // Start SFM4300
+    sfmWriteCmd(CMD_START_CONTINUOUS_MEASUREMENT_AIR);
+    if (!readFlow()) {
+        Serial.println(F("SFM4300 initialization failed."));
+    }
+}
 
 // ------------------ Setup ------------------
-void setup() {
+void setup() { 
+    delay(2000);
+    Wire.begin();
     delay(2000);
     Serial.begin(9600);
-    delay(2000);
-    
+    waitFor(Serial.isConnected, 3000);
+
     // Initialize UART for sensor communication (38400 baud, 8N2)
     Serial1.begin(38400, SERIAL_8N2);
     delay(2000);
     Serial.println("Starting sensor communication...");
-    delay(2000);
+    waitFor(Serial.isConnected, 3000);
     
     // Enter CONFIGURATION Mode with [C]
     if (sendCommand("[C]")) {
@@ -246,52 +297,45 @@ void setup() {
     } else {
         Serial.println("Failed to enter ENGINEERING Mode.");
     }
-    
-    // Initialize main BME680
-    if (!bme680.begin(0x77)) {
-        Serial.println(F("Could not find a valid BME680 sensor, check wiring!"));
-        delay(2000);
-    }
-    bme680.setTemperatureOversampling(BME680_OS_8X);
-    bme680.setHumidityOversampling(BME680_OS_2X);
-    bme680.setPressureOversampling(BME680_OS_4X);
-    bme680.setIIRFilterSize(BME680_FILTER_SIZE_3);
-    bme680.setGasHeater(320, 150);
-    
-    // Initialize BO BME680
-    if (!bme680_bo.begin(0x76)) {
-        Serial.println(F("Could not find a valid BO BME680 sensor, check wiring!"));
-        delay(2000);
-    }
-    bme680_bo.setTemperatureOversampling(BME680_OS_8X);
-    bme680_bo.setHumidityOversampling(BME680_OS_2X);
-    bme680_bo.setPressureOversampling(BME680_OS_4X);
-    bme680_bo.setIIRFilterSize(BME680_FILTER_SIZE_3);
-    bme680_bo.setGasHeater(320, 150);
-    
-    // Initialize BO ADCs
-    ads_MOX.begin();
-    ads_MOX.setGain(GAIN_ONE);
-    ads_EC.begin();
-    ads_EC.setGain(GAIN_ONE);
-    
-    // Initialize BO ADCs for BO board
-    ads_MOX_BO.begin();
-    ads_MOX_BO.setGain(GAIN_ONE);
-    ads_EC_BO.begin();
-    ads_EC_BO.setGain(GAIN_ONE);
-    
-    // Initialize SFM4300
-    Wire.begin();
-    sfmWriteCmd(CMD_START_CONTINUOUS_MEASUREMENT_AIR);
-    if(!readFlow()){Serial.println(F("SFM4300 initialization failed."));}
+
+    initializeSensors(); // Function to help simplfy Setup loop. Check above for details
     
     // Register cloud functions
     Particle.function("activate", activate);
     Particle.function("formatUART", formatUART);
+
+    // Initialization of The SD card
+    if (!SD.begin(D5, SD_SCK_MHZ(25))) { // Note 22 is the Raw Pin Number for the CS Pin
+        Serial.println("SD initialization failed!");
+        return;
+    }
+    Serial.println("SD initialization done.");
+
+    // Check if Data File exist otherwise create file
+    if (!SD.exists(fileName)) {
+        Serial.println(fileName+" does not exist, creating it...");
+        File dataFile = SD.open(fileName, FILE_WRITE);
+
+        if (dataFile) {
+            // Write CSV header
+            dataFile.println("Time,FlowRate (slm),FlowTemp (C),Main TGS2600 (mV),Main TGS2602 (mV),Main TGS2611 (mV),"
+                 "Main EC_Worker (mV),Main EC_Aux (mV),BO TGS2600 (mV),BO TGS2602 (mV),BO TGS2611 (mV),"
+                 "BO EC_Worker (mV),BO EC_Aux (mV),SGX_Analog (mV),SGX_Digital (ppm),Temperature (C),"
+                 "Pressure (hPa),Humidity (%),GasResistance (Ohms),BO Temperature (C),BO Pressure (hPa),"
+                 "BO Humidity (%),BO GasResistance (Ohms)");
+
+
+            dataFile.close();
+            Serial.println(fileName+" created with header.");
+        } else {
+            Serial.println("Failed to create "+fileName+".");
+    }
+  } else {
+        Serial.println(fileName+" already exists. Appending data.");
+  }
     
-    //Serial.println("Waiting for sensor warm-up (45 seconds)...");
-    //delay(45000);
+    Serial.println("Waiting for sensor warm-up (45 seconds)...");
+    delay(45000);
 }
 
 // Main Loop ****************************************************************************************
@@ -329,8 +373,6 @@ void loop() {
     double av_EC_BO_1 = adc_EC_BO_1 * multiplier;
     double av_EC_BO_2 = adc_EC_BO_2 * multiplier;
 
-
-
     //////////////////////////////////////////////////////////////////////////////////////////////////////////
     // Read BME680 values
     if (!bme680.performReading()) {
@@ -349,7 +391,6 @@ void loop() {
     double relativeHumidity_bo = bme680_bo.humidity;
     double pressurepa_bo = bme680_bo.pressure;
     double gas_resistance_bo = bme680_bo.gas_resistance;
-
 
     /////////////////////////////////////////////////////////////////////////////////////////////////////////////
     //SGX UART acquisition
@@ -443,15 +484,29 @@ void loop() {
             temperatureInC, pressurepa, relativeHumidity, gas_resistance, 
             temperatureInC_bo, pressurepa_bo, relativeHumidity_bo, gas_resistance_bo
         );
+        File dataFile = SD.open(fileName, FILE_WRITE);
+        if (dataFile) { dataFile.println(formattedData + "," + String(sample_cnt) + "\n");
+            dataFile.close();
+        }      else {
+        Serial.println("Error opening " + fileName);
+        };
+        
         Serial.println(formattedData + "," + String(sample_cnt) + "\n");
     }
     // Print formatted sensor data and sample count
-      Serial.println(data + "," + String(sample_cnt) + "\n");
+    /*File dataFile = SD.open(fileName, FILE_WRITE);
+    if (dataFile) { dataFile.println(data + "," + String(sample_cnt));
+        dataFile.close();
+    }      else {
+    Serial.println("Error opening " + fileName);
+    }*/
+
+    Serial.println(data + "," + String(sample_cnt) + "\n");
 
     // Buffer data for cloud publishing if needed
     if ((dataBuffer.length() + data.length() + 1) > 1024) {
         if (active) {
-            Particle.publish("BoroniusData", dataBuffer, PRIVATE);
+            Particle.publish(eventName, dataBuffer, PRIVATE, NO_ACK);
             Serial.println("Data sent to cloud (buffer full)");
         } else {
             Serial.println("Data collection inactive, discarding buffer");
