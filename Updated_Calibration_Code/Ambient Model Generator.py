@@ -10,17 +10,22 @@ lE, lT = startLoading(message = "Importing libraries")
 
 # Importing essential libraries...
 from Python.sheets_puller import sheetPuller
+import os, pickle, textwrap
 import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
 import tkinter as tk
-import pickle
 from tkinter import filedialog
-from datetime import timedelta
+from datetime import timedelta, datetime as dt
 from sklearn import linear_model
+from sklearn.base import clone
 from sklearn.metrics import mean_squared_error, r2_score
 from sklearn.preprocessing import PolynomialFeatures
 from sklearn.pipeline import Pipeline
+from scipy.stats import linregress
 from pathlib import Path
+from matplotlib.backends.backend_pdf import PdfPages
 stopLoading(lE, lT)
 
 
@@ -108,14 +113,12 @@ MOX = (MOX.mask(MOX == 404, np.nan).infer_objects(copy = False)
 
 #%% Cleaning Setpoints data...
 
-#Setpoints.columns = Setpoints.columns.str.strip()                                      # Removing extraneous spaces
+#Setpoints.columns = Setpoints.columns.str.strip()                                       # Removing extraneous spaces
 Setpoints = Setpoints.rename(columns = {'Date [mm/dd] Start Time [hh:mm:ss]': 'time'})  # Renaming time column
 
 # Converting 'time' column to datetime and coercing errors
-Setpoints['time'] = pd.to_datetime(Setpoints['time'], format='mixed', errors='coerce')
-
-# Setting the 'time' column as the new index
-Setpoints = Setpoints.set_index('time')
+Setpoints['time'] = pd.to_datetime(Setpoints['time'], format="mixed")  
+Setpoints = Setpoints.set_index('time')                         # Dropping nan rows and setting time as index
 
 # Isolating start and end times in Setpoints
 Setpoints = Setpoints[(Setpoints.index > startTime) & (Setpoints.index < endTime)]
@@ -165,16 +168,11 @@ setpointavg = (
 
 #%% Data Wrangling, split into training and delivering ranges...
 
-# Creating feature interactions and ratios
-setpointavg["Temp*Humid"] = setpointavg["Temp"] * setpointavg["Humidity"]
-setpointavg["R11_00"] = setpointavg["TGS2611"] / setpointavg["TGS2600"]
-
-# Training and testing on the same dataset
 # Training ranges from the TRAINING dataset
-ambTrain = setpointavg[setpointavg["Setpoint"] <= 30]
+ambTrain = setpointavg[setpointavg["Setpoint"] <= 20]
     
 # Delivering (testing) ranges from the TESTING dataset
-ambTest = setpointavg[setpointavg["Setpoint"] <= 30]
+ambTest = setpointavg[setpointavg["Setpoint"] <= 20]
 
 
 #%% Generating regression models for each range...
@@ -186,32 +184,26 @@ polynomial_model_deg2 = Pipeline([
 ])
 
 # Ambient Regression
-amb_reg = polynomial_model_deg2
-#amb_reg = linear_model.LinearRegression()
+amb_reg = polynomial_model_deg2                      # Creating a clone of the pipeline for the low-range model
 
-# Defining the feature sets with the original column names
-Xamb = ambTrain[["TGS2600", "TGS2611", "TGS2602", "Temp", "Humidity", "R11_00"]].copy()
-xAmb = ambTest[["TGS2600", "TGS2611", "TGS2602", "Temp", "Humidity", "R11_00"]].copy()
+# 1. Define the feature sets with the original column names
+Xamb = ambTrain[["TGS2600", "TGS2611", "TGS2602", "EC", "Temp", "Pressure", "Humidity"]].copy()
 
-# Fitting the regression models
+xAmb = ambTest[["TGS2600", "TGS2611", "TGS2602", "EC", "Temp", "Pressure", "Humidity"]].copy()
+
+# 3. Fitting the regression models
 amb_reg.fit(Xamb, ambTrain["Setpoint"])
 
-# Creating a dataframe with the actual and predicted values from model
+# Creating a dataframe with the actual and predicted values from models
 reg_model_diff_amb = pd.DataFrame({"Actual value": ambTest["Setpoint"], "Predicted value": amb_reg.predict(xAmb)})
 
-# Calculating RMS
+# Calculating RMS for entire regression, low, medium, & high RMS
 RMSamb = np.sqrt(mean_squared_error(reg_model_diff_amb["Actual value"], reg_model_diff_amb["Predicted value"]))
 
-# Calculating R² for ambient model
+# Calculating R² for each model
 r2_amb = r2_score(reg_model_diff_amb["Actual value"], reg_model_diff_amb["Predicted value"])
 
-# Printing R² and RMS values for ambient model
+# Printing R² and RMS values for each model
 print("\n\n------ R² & RMS ERROR REPORT ------")
 print(f"Ambient Regression Model (Poly Deg 2) --> RMS: {RMSamb:.4f} [ppm], R²: {r2_amb:.4f}")
 
-
-#%% Saving regression model and RMSE
-with open('coefficients/Ambient_Colocate_reg.pkl',"wb") as f:
-    pickle.dump(amb_reg,f)
-with open("coefficients/A_RMSE.txt","w") as file:
-    file.write(str(RMSamb))
