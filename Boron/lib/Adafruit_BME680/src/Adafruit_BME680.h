@@ -19,7 +19,7 @@
 
 #include "application.h"
 #include "Particle.h"
-#include <Adafruit_Sensor.h>
+#include "Adafruit_Sensor.h"
 
 #include "bme680.h"
 

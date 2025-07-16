@@ -19,7 +19,7 @@ SYSTEM_MODE(AUTOMATIC);
 SerialLogHandler logHandler(LOG_LEVEL_INFO);
 
 // Event/File Name
-String eventName = "Boron_1";
+String eventName = "Boron_2";
 String fileName = "Data.csv"; // Name of File to store data on SD card
 
 // Flowrate address and commands
@@ -494,12 +494,12 @@ void loop() {
         Serial.println(formattedData + "," + String(sample_cnt) + "\n");
     }
     // Print formatted sensor data and sample count
-    /*File dataFile = SD.open(fileName, FILE_WRITE);
+    File dataFile = SD.open(fileName, FILE_WRITE);
     if (dataFile) { dataFile.println(data + "," + String(sample_cnt));
         dataFile.close();
     }      else {
     Serial.println("Error opening " + fileName);
-    }*/
+    }
 
     Serial.println(data + "," + String(sample_cnt) + "\n");
 

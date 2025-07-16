@@ -35,6 +35,7 @@ target/*
 Thumbs.db
 *.stackdump
 [Dd]esktop.ini
+nul
 
 # C Prerequisites
 *.d
