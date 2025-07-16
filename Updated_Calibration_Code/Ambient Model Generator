@@ -1,0 +1,217 @@
+"""
+Ambient Regression Model Generator
+Jessica Goff
+06.30.25
+"""
+
+# Importing loading UI essentials...
+from Python.loadingUI import startLoading, stopLoading
+lE, lT = startLoading(message = "Importing libraries")
+
+# Importing essential libraries...
+from Python.sheets_puller import sheetPuller
+import pandas as pd
+import numpy as np
+import tkinter as tk
+import pickle
+from tkinter import filedialog
+from datetime import timedelta
+from sklearn import linear_model
+from sklearn.metrics import mean_squared_error, r2_score
+from sklearn.preprocessing import PolynomialFeatures
+from sklearn.pipeline import Pipeline
+from pathlib import Path
+stopLoading(lE, lT)
+
+
+#%% ------------------------------------------------------------------ User-Defined Variables ------------------------------------------------------------------
+# Importing setpoint file
+filePrompt = False      # Prompt the user to select a specific setpoint file?
+                        # If filePrompt is false, defaultPath will be used instead
+defaultPath = "MetaData_060325.csv"
+
+pcbNum = 4              # What Boron sensor are you using?
+
+# Setting start & end times
+startTime = pd.to_datetime("2025-06-03 15:23:00")      # Must be within selected dataset
+endTime = pd.to_datetime("2025-06-09 16:17:00")        # Must be in [yyyy-mm-dd hh-mm-ss] format
+
+# Setting steady state time range within start & end times
+SS_start = 11       # [min]
+SS_end   = 15       # [min]
+
+# Choosing sheet in google file
+sheet = "Data" # Sheet name to draw data from. Case sensitive.
+# Boron_5 Data has been moved to "DataArchive6-17"
+
+lE, lT = startLoading(message = "Importing data", t=0.25)
+MOX = sheetPuller(sheet, f"Boron_{pcbNum}")
+
+stopLoading(lE, lT)
+
+
+#%% Creating folders for figures, reports, coefficients, and box concentrations...
+for path in ["Coefficients", "Figures", "Reports", "Box_Concentrations"]:
+    Path(path).mkdir(parents=True, exist_ok=True)
+
+
+#%% Getting files...
+
+# If user wants to be prompted to choose file
+if filePrompt:
+    print("Select Setpoints File in the Dialog Window to Continue!")
+    root = tk.Tk().withdraw()
+    setpoints_file = filedialog.askopenfile(title="Select Setpoints File", filetypes=(("CSV files", "*.csv"), ("all files", "*.*")))
+    Setpoints = pd.read_csv(setpoints_file.name)
+else:
+    Setpoints = pd.read_csv(defaultPath)                        # defaultPath specified at top of code
+
+
+#%% Cleaning MOX data & resampling...
+
+print("Cleaning and preparing data...")
+
+# Converting 'Time' column and coercing errors to NaT (Not a Time)
+MOX['Time'] = pd.to_datetime(MOX['Time'], format='%Y-%m-%d %H:%M:%S', errors = 'coerce')
+
+# Dropping rows with invalid dates and setting time as the index
+MOX = MOX.set_index('Time')
+MOX = MOX.sort_index()
+
+# Removing rows with the boot-up timestamp
+MOX = MOX[MOX.index != pd.Timestamp("1999-12-31 17:00:12")]
+
+# Filtering to the date range of interest
+print(f"\n---- MOX Timeframe Adjustments ----\nMOX size before filtering: {len(MOX)}")
+# Checking if the date range does not exist
+if not MOX.empty:
+    try:
+        MOX = MOX.loc[(MOX.index >= startTime) & (MOX.index <= endTime)]
+    except KeyError:
+        print("Warning: The specified startTime or endTime was not found in the MOX data. Skipping date range filter.")
+print(f"MOX size after filtering: {len(MOX)}\n")
+
+# Dropping internal sensors
+MOX.drop(columns = ["BO TGS2600 (mV)", "BO TGS2602 (mV)", "BO TGS2611 (mV)", "BO EC_Worker (mV)", "BO EC_Aux (mV)", 
+                    "BO Temperature (C)", "BO Pressure (hPa)", "BO Humidity (%)", "BO GasResistance (Ohms)", 
+                    "FlowRate (slm)", "FlowTemp (C)"], errors = 'ignore', inplace = True)
+
+# Renaming columns to remove units
+MOX.rename(columns = {"Main TGS2600 (mV)" : "TGS2600", "Main TGS2602 (mV)" : "TGS2602", "Main TGS2611 (mV)" : "TGS2611", "Main EC_Worker (mV)" : "EC",
+                      "Main EC_Aux (mV)" : "EC_Aux", "SGX_Analog (mV)" : "SGX_Analog", "SGX_Digital (ppm)" : "SGX_Digital", "Temperature (C)" : "Temp",
+                      "Pressure (hPa)" : "Pressure", "Humidity (%)" : "Humidity", "GasResistance (Ohms)" : "GasResistance"}, inplace = True)
+
+# Cleaning data values and resampling for plotting
+MOX = (MOX.mask(MOX == 404, np.nan).infer_objects(copy = False)
+       .dropna().resample("60s").last().dropna())
+
+
+#%% Cleaning Setpoints data...
+
+#Setpoints.columns = Setpoints.columns.str.strip()                                      # Removing extraneous spaces
+Setpoints = Setpoints.rename(columns = {'Date [mm/dd] Start Time [hh:mm:ss]': 'time'})  # Renaming time column
+
+# Converting 'time' column to datetime and coercing errors
+Setpoints['time'] = pd.to_datetime(Setpoints['time'], format='mixed', errors='coerce')
+
+# Setting the 'time' column as the new index
+Setpoints = Setpoints.set_index('time')
+
+# Isolating start and end times in Setpoints
+Setpoints = Setpoints[(Setpoints.index > startTime) & (Setpoints.index < endTime)]
+
+
+#%% Generating setpointavg dataframe...
+
+print("Creating setpoint avg dataframe...\n")
+
+results = [] # A list to hold our complete, valid rows.
+
+# Using .iterrows() to get both the timestamp and the row data from Setpoints
+for timestamp, row in Setpoints.iterrows():
+    try:
+        window_data = MOX.loc[timestamp + timedelta(minutes=SS_start): timestamp + timedelta(minutes=SS_end)]
+
+        # Calculates mean of sensor data if it exists
+        if not window_data.empty:
+            sensor_means = window_data.mean()
+            
+            # Creating a dictionary from the sensor means
+            new_row_dict = sensor_means.to_dict()
+            
+            # Adding the corresponding H2S and CH4 values from the current Setpoints row
+            new_row_dict['H2S'] = row['C_H2S [ppm]']
+            new_row_dict['Setpoint'] = row['C_CH4 [ppm]']
+            
+            # Appending the complete dictionary for this valid row to our list
+            results.append(new_row_dict)
+            
+        else:
+            # If the window is empty, print message with timestamp for missing data but do not include 0s in dataframe
+            print(f"No data found for window around {timestamp.strftime('%Y-%m-%d %H:%M:%S')}. Skipping.")
+            pass
+
+    except Exception as e:
+        print(f"An unexpected error occurred for timestamp {timestamp}: {e}")           # In case of other errors in data
+
+# Creating the final dataframe from our list of processed dictionaries
+setpointavg = pd.DataFrame(results)
+
+# Sorting and resetting the index based on setpoints
+setpointavg = (
+    setpointavg.sort_values(by = "Setpoint", ascending=True)
+               .reset_index(drop=True))
+
+
+#%% Data Wrangling, split into training and delivering ranges...
+
+# Creating feature interactions and ratios
+setpointavg["Temp*Humid"] = setpointavg["Temp"] * setpointavg["Humidity"]
+setpointavg["R11_00"] = setpointavg["TGS2611"] / setpointavg["TGS2600"]
+
+# Training and testing on the same dataset
+# Training ranges from the TRAINING dataset
+ambTrain = setpointavg[setpointavg["Setpoint"] <= 30]
+    
+# Delivering (testing) ranges from the TESTING dataset
+ambTest = setpointavg[setpointavg["Setpoint"] <= 30]
+
+
+#%% Generating regression models for each range...
+# Creating base regression models
+# Polynomial degree 2
+polynomial_model_deg2 = Pipeline([
+    ('poly', PolynomialFeatures(degree=2, include_bias=False)),
+    ('linear', linear_model.LinearRegression())
+])
+
+# Ambient Regression
+amb_reg = polynomial_model_deg2
+#amb_reg = linear_model.LinearRegression()
+
+# Defining the feature sets with the original column names
+Xamb = ambTrain[["TGS2600", "TGS2611", "TGS2602", "Temp", "Humidity", "R11_00"]].copy()
+xAmb = ambTest[["TGS2600", "TGS2611", "TGS2602", "Temp", "Humidity", "R11_00"]].copy()
+
+# Fitting the regression models
+amb_reg.fit(Xamb, ambTrain["Setpoint"])
+
+# Creating a dataframe with the actual and predicted values from model
+reg_model_diff_amb = pd.DataFrame({"Actual value": ambTest["Setpoint"], "Predicted value": amb_reg.predict(xAmb)})
+
+# Calculating RMS
+RMSamb = np.sqrt(mean_squared_error(reg_model_diff_amb["Actual value"], reg_model_diff_amb["Predicted value"]))
+
+# Calculating R² for ambient model
+r2_amb = r2_score(reg_model_diff_amb["Actual value"], reg_model_diff_amb["Predicted value"])
+
+# Printing R² and RMS values for ambient model
+print("\n\n------ R² & RMS ERROR REPORT ------")
+print(f"Ambient Regression Model (Poly Deg 2) --> RMS: {RMSamb:.4f} [ppm], R²: {r2_amb:.4f}")
+
+
+#%% Saving regression model and RMSE
+with open('coefficients/Ambient_Colocate_reg.pkl',"wb") as f:
+    pickle.dump(amb_reg,f)
+with open("coefficients/A_RMSE.txt","w") as file:
+    file.write(str(RMSamb))
