@@ -35,8 +35,8 @@ lE, lT = startLoading(message = "Importing libraries")
 from Python.sheets_puller import sheetPuller
 import pandas as pd
 import numpy as np
-import tkinter as tk
-from tkinter import filedialog
+import seaborn as sns
+import matplotlib.pyplot as plt
 from datetime import timedelta
 from sklearn import linear_model
 from sklearn.metrics import mean_squared_error, r2_score
@@ -49,43 +49,38 @@ stopLoading(lE, lT)
 
 
 #%% ------------------------------------------------------------------ User-Defined Variables ------------------------------------------------------------------
-# Importing setpoint file
-filePrompt = False      # Prompt the user to select a specific setpoint file?
-                        # If filePrompt is false, defaultPath will be used instead
-defaultPath = "MetaData_060325.csv"
 
-pcbNum = 5              # What Boron sensor are you using?
+defaultPath = "MetaData_060325.csv"                     # Setpoints file from calibration
 
-iterNum = 100           # How many times do you want to iterate?
+pcbNum = 3              # What Boron sensor are you using (3, 4, or 5)?
 
 # Setting start & end times
-startTime = pd.to_datetime("2025-06-04 15:23:00")      # Must be within selected dataset
+# Selected times isolate the calibration period
+startTime = pd.to_datetime("2025-06-03 15:23:00")      # Must be within selected dataset
 endTime = pd.to_datetime("2025-06-09 16:17:00")        # Must be in [yyyy-mm-dd hh-mm-ss] format
 
 # Setting steady state time range within start & end times
 SS_start = 11       # [min]
 SS_end   = 15       # [min]
 
-# Choosing sheet in google file
-sheet = "DataArchive6-17" # Sheet name to draw data from. Case sensitive.
-# Boron_5 Data has been moved to "DataArchive6-17"
+# Defining the number of iterations for the model testing
+iterNum = 1000
 
+
+#%% Importing data...
 lE, lT = startLoading(message = "Importing data", t=0.25)
-MOX = sheetPuller(sheet, f"Boron_{pcbNum}")
+
+# Importing data from Google sheets
+try: MOX = sheetPuller(f"Boron {pcbNum}", "06.03.25 Calibration")
+except Exception as e:
+    stopLoading(lE, lT, done=False)
+    print("\nAn error was encountered while importing data!")
+    raise e
+
+# Importing setpoint file
+Setpoints = pd.read_csv(defaultPath)                        # defaultPath specified at top of code
 
 stopLoading(lE, lT)
-
-
-#%% Getting files...
-
-# If user wants to be prompted to choose file
-if filePrompt:
-    print("Select Setpoints File in the Dialog Window to Continue!")
-    root = tk.Tk().withdraw()
-    setpoints_file = filedialog.askopenfile(title="Select Setpoints File", filetypes=(("CSV files", "*.csv"), ("all files", "*.*")))
-    Setpoints = pd.read_csv(setpoints_file.name)
-else:
-    Setpoints = pd.read_csv(defaultPath)                        # defaultPath specified at top of code
 
 
 #%% Cleaning MOX data & resampling...
@@ -235,7 +230,7 @@ def ratioFeatures(df):
     return df_out
 
 featuresLow = ["BO TGS2600", "BO TGS2611", "R11_00", "Temp_Humid"]
-featuresMed = ["BO TGS2600", "BO TGS2611", "Temp_2611", "BO Humidity", "Temp_Humid"]
+featuresMed = ["BO TGS2611", "BO Humidity", "BO Temperature"]
 featuresHigh = ["SGX_Digital", "BO Temperature", "BO TGS2611", "BO Humidity", "SGX_Temp", "Temp_2611"]
 
 
@@ -260,16 +255,13 @@ for i in range(iterNum):
 
 
     #% --- Data Wrangling ---
-    # Training ranges from the TRAINING dataset
     lowTrain = setpointavg_train[setpointavg_train["Setpoint"] <= 71]
     medTrain = setpointavg_train[(setpointavg_train["Setpoint"] >= 60) & (setpointavg_train["Setpoint"] <= 1000)]
     highTrain = setpointavg_train[setpointavg_train["Setpoint"] >= 600]
-    
-    # Delivering (testing) ranges from the TESTING dataset
     lowTest = setpointavg_test[setpointavg_test["Setpoint"] <= 71]
     medTest = setpointavg_test[(setpointavg_test["Setpoint"] > 71) & (setpointavg_test["Setpoint"] <= 750)]
     highTest = setpointavg_test[setpointavg_test["Setpoint"] > 750]
-
+    
     # Format: (Range Name, Training Data, Testing Data, Feature List)
     data_ranges = [
         ("Low", lowTrain, lowTest, featuresLow),
@@ -338,19 +330,14 @@ print("\n\n------ MODEL COMPARISON REPORT ------")
 print(average_results_df.to_string())
 
 
-#%% Plotting...
-import seaborn as sns
-import matplotlib.pyplot as plt
-
+#%% R² Boxplot...
+# Defining order for range boxplots
 range_order = ["Low", "Medium", "High"]
 
-# Step 2: Create the figure and axes for the plot
-# Using a higher DPI (dots per inch) makes the saved image crisper.
+# Creating the figure and axes for the plot
 fig1, ax1 = plt.subplots(figsize=(8, 7), dpi=600)
 
-# Step 3: Draw the grouped boxplot
-# When using the 'data' parameter, you can pass column names as strings
-# to 'x', 'y', and 'hue'. This is the standard, recommended convention.
+# Drawing the grouped boxplot
 sns.boxplot(
     data=resultsDf,
     x="Range",
@@ -358,31 +345,31 @@ sns.boxplot(
     hue="Model",
     ax=ax1,
     order=range_order,  # Apply the specified order here
-    palette="Set2",
-    showfliers = False      # A nice color scheme for visual distinction
+    palette="Set2",     # A nice color scheme for visual distinction
+    showfliers = False      
 )
 
-# Step 4: Customize the plot for clarity and presentation
+# Customizing the plot for clarity and presentation
 ax1.set_title("Model R² Score Distribution by Calibration Range", fontsize=16, pad=20)
 ax1.set_ylabel("R² Score", fontsize=12)
 ax1.set_xlabel("Calibration Range", fontsize=12)
 
-# Add a horizontal grid for easier reading of y-axis values
+# Adding a horizontal grid for easier reading of y-axis values
 ax1.yaxis.grid(True, linestyle='--', which='major', color='grey', alpha=0.5)
 ax1.set_axisbelow(True)  # Puts gridlines behind the plot elements
 
-# Step 5: Adjust and place the legend
-# Your method of using bbox_to_anchor is great for moving the legend outside.
+# Adjusting & placing legend
 ax1.legend(title="Model", loc='lower right')
 
-# Step 6: Ensure all plot elements fit without overlapping
-# The 'rect' parameter can be adjusted to make more room for the legend.
+# Ensuring all plot elements fit without overlapping
 plt.tight_layout(rect=[0, 0, 0.9, 1])
 
-# Step 7: Display the final plot
+# Displaying the final plot
 plt.show()
 
 
+#%% Archived plots...
+"""
 #%% CH4 Residuals Plot...
 
 # --- Step 1: Initialize variables to track the best model run ---
@@ -405,12 +392,12 @@ for i in range(n_iterations):
     setpointavg_test = create_setpoint_averages(test_setpoints, MOX, SS_start, SS_end)
 
     # Wrangle the new data into Low, Medium, and High ranges
-    lowTrain = setpointavg_train[setpointavg_train["Setpoint"] <= 71]
-    medTrain = setpointavg_train[(setpointavg_train["Setpoint"] >= 60) & (setpointavg_train["Setpoint"] <= 1000)]
-    highTrain = setpointavg_train[setpointavg_train["Setpoint"] >= 600]
-    lowTest = setpointavg_test[setpointavg_test["Setpoint"] <= 71]
-    medTest = setpointavg_test[(setpointavg_test["Setpoint"] > 71) & (setpointavg_test["Setpoint"] <= 750)]
-    highTest = setpointavg_test[setpointavg_test["Setpoint"] > 750]
+    lowTrain = setpointavg_train[setpointavg_train["Setpoint"] <= 30]
+    medTrain = setpointavg_train[(setpointavg_train["Setpoint"] > 30) & (setpointavg_train["Setpoint"] <= 200)]
+    highTrain = setpointavg_train[setpointavg_train["Setpoint"] > 200]
+    lowTest = setpointavg_test[setpointavg_test["Setpoint"] <= 30]
+    medTest = setpointavg_test[(setpointavg_test["Setpoint"] > 30) & (setpointavg_test["Setpoint"] <= 200)]
+    highTest = setpointavg_test[setpointavg_test["Setpoint"] > 200]
 
     # Define the models for this run
     model_map = {
@@ -499,7 +486,7 @@ print("\nGenerating RMSE histogram subplots...")
 
 # --- Step 1: Set up the figure and axes for 3 subplots ---
 # We create one row with three columns. `sharey=True` makes comparing heights easier.
-fig, axes = plt.subplots(1, 3, figsize=(20, 7), dpi=1200)
+fig, axes = plt.subplots(1, 3, figsize=(20, 7), dpi=600)
 
 # Get the list of models you tested
 model_names = resultsDf['Model'].unique()
@@ -539,4 +526,5 @@ fig.suptitle('Comparison of Model RMSE Distributions by Range', fontsize=20, fon
 plt.tight_layout(rect=[0, 0, 1, 0.95])
 
 plt.show()
-fig.savefig(f"Figures/Boron{pcbNum}HistogramRMSE.png", dpi = 1200)
+fig.savefig(f"Figures/Boron{pcbNum}HistogramRMSE.png", dpi = 600)
+"""
